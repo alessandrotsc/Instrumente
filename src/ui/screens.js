@@ -1,0 +1,405 @@
+// Alle Bildschirme der App und der Ablauf einer Lern-Sitzung.
+import { store } from "../core/store.js";
+import { SessionEngine } from "../core/session.js";
+import { buildKeyboard } from "./keyboard.js";
+import { piano, noteCurriculum } from "../instruments/piano.js";
+import { ensureAudio } from "../core/audio.js";
+import { initMidi, isMidiEnabled } from "../core/input.js";
+
+const DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_SETTINGS = { length: 15, naming: "de", showKeyLabels: false };
+
+let settings = { ...DEFAULT_SETTINGS };
+const root = () => document.getElementById("app");
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function dayStr(d) {
+  return d.toISOString().slice(0, 10);
+}
+function delay(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export async function boot() {
+  showHome(); // sofort zeichnen, damit nichts auf IndexedDB warten muss
+  try {
+    const s = await store.getMeta("settings", {});
+    settings = { ...DEFAULT_SETTINGS, ...s };
+    showHome(); // mit echten Einstellungen auffrischen
+  } catch (e) {
+    /* Startseite steht bereits mit Standardwerten */
+  }
+}
+
+// ---------- Startseite ----------
+function showHome() {
+  const app = root();
+  app.innerHTML = "";
+
+  const view = el("div", "view home");
+
+  const header = el("header", "app-header");
+  header.appendChild(el("h1", "app-title", "Instrumente lernen"));
+  header.appendChild(el("p", "app-sub", piano.name));
+  view.appendChild(header);
+
+  const stats = el("div", "stat-row");
+  const streakStat = stat("🔥", "·", "Tage");
+  const learnedStat = stat("🎹", `·/${noteCurriculum.length}`, "Noten sitzen");
+  stats.appendChild(streakStat);
+  stats.appendChild(learnedStat);
+  view.appendChild(stats);
+
+  // Werte nachladen, ohne das erste Zeichnen zu blockieren.
+  Promise.all([store.allCards(), store.getMeta("streak", 0)])
+    .then(([cards, streak]) => {
+      const learned = cards.filter((c) => c.box >= 1).length;
+      streakStat.querySelector(".stat-value").textContent = String(streak);
+      streakStat.querySelector(".stat-label").textContent = streak === 1 ? "Tag" : "Tage";
+      learnedStat.querySelector(".stat-value").textContent = `${learned}/${noteCurriculum.length}`;
+    })
+    .catch(() => {});
+
+  const primary = el("button", "btn primary big", `Heute üben · ${settings.length} Min`);
+  primary.addEventListener("click", () => {
+    ensureAudio();
+    runSession();
+  });
+  view.appendChild(primary);
+
+  const free = el("button", "btn ghost", "Freies Spiel");
+  free.addEventListener("click", () => {
+    ensureAudio();
+    showFreePlay();
+  });
+  view.appendChild(free);
+
+  const gear = el("button", "btn ghost small", "⚙︎ Einstellungen");
+  gear.addEventListener("click", showSettings);
+  view.appendChild(gear);
+
+  const hint = el("p", "method-hint", "Klang vor Zeichen: erst hören und spielen, dann lesen. Täglich kurz schlägt selten lang.");
+  view.appendChild(hint);
+
+  app.appendChild(view);
+}
+
+function stat(icon, value, label) {
+  const s = el("div", "stat");
+  s.appendChild(el("div", "stat-icon", icon));
+  s.appendChild(el("div", "stat-value", String(value)));
+  s.appendChild(el("div", "stat-label", label));
+  return s;
+}
+
+// ---------- Lern-Sitzung ----------
+async function runSession() {
+  const app = root();
+  app.innerHTML = "";
+  const engine = new SessionEngine(store, noteCurriculum, {
+    durationMin: settings.length,
+    naming: settings.naming,
+  });
+
+  const view = el("div", "view session");
+
+  const top = el("div", "session-top");
+  const close = el("button", "btn ghost small", "✕");
+  close.addEventListener("click", () => showHome());
+  const bar = el("div", "progress");
+  const barFill = el("div", "progress-fill");
+  bar.appendChild(barFill);
+  const timeLbl = el("div", "time-left", "");
+  top.appendChild(close);
+  top.appendChild(bar);
+  top.appendChild(timeLbl);
+  view.appendChild(top);
+
+  const prompt = el("div", "prompt", "");
+  view.appendChild(prompt);
+  const stimulus = el("div", "stimulus", "");
+  view.appendChild(stimulus);
+  const feedback = el("div", "feedback", "");
+  view.appendChild(feedback);
+
+  const kbWrap = el("div", "keyboard-wrap");
+  view.appendChild(kbWrap);
+  app.appendChild(view);
+
+  // Antwort-Weiterleitung: die Klaviatur ruft answer() beim Tastendruck.
+  let answer = null;
+  const kb = buildKeyboard(kbWrap, {
+    low: piano.lowestMidi,
+    high: piano.highestMidi,
+    onPress: (midi) => {
+      if (answer) answer(midi);
+    },
+  });
+  if (settings.showKeyLabels) kb.labelWhites(settings.naming);
+
+  const tick = setInterval(() => {
+    barFill.style.width = engine.progress * 100 + "%";
+    timeLbl.textContent = fmtTime(engine.timeLeft);
+  }, 500);
+
+  let sincePause = 0;
+  try {
+    while (!engine.done) {
+      const task = await engine.nextTask();
+      if (!task) break;
+      prompt.textContent = task.kind === "ear" ? "Gehör" : "Noten lesen";
+      const sub = el("div", "prompt-sub", task.prompt);
+      prompt.appendChild(sub);
+      task.render(stimulus);
+      feedback.textContent = "";
+      feedback.className = "feedback";
+
+      const pressed = await new Promise((res) => {
+        answer = (m) => {
+          answer = null;
+          res(m);
+        };
+      });
+
+      const correct = task.check(pressed);
+      if (correct) {
+        kb.markCorrect(task.targetMidi);
+        feedback.textContent = task.label ? `Richtig · ${task.label}` : "Richtig";
+        feedback.className = "feedback good";
+      } else {
+        kb.markWrong(pressed);
+        kb.markCorrect(task.targetMidi);
+        task.reveal();
+        feedback.textContent = task.label ? `Das war ${task.label}` : "Nicht ganz";
+        feedback.className = "feedback bad";
+      }
+      await engine.record(task, correct);
+      barFill.style.width = engine.progress * 100 + "%";
+
+      await delay(correct ? 700 : 1500);
+      sincePause++;
+      if (sincePause >= 6 && !engine.done) {
+        await microPause(view);
+        sincePause = 0;
+      }
+    }
+  } finally {
+    clearInterval(tick);
+    kb.destroy();
+  }
+  await finishSession(engine);
+}
+
+function fmtTime(ms) {
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function microPause(view) {
+  return new Promise((res) => {
+    const overlay = el("div", "overlay pause");
+    overlay.appendChild(el("div", "pause-title", "Kurze Pause"));
+    overlay.appendChild(el("div", "pause-sub", "Durchatmen. Pausen festigen das Gelernte."));
+    let left = 15;
+    const cnt = el("div", "pause-count", String(left));
+    overlay.appendChild(cnt);
+    const skip = el("button", "btn ghost", "Weiter");
+    overlay.appendChild(skip);
+    view.appendChild(overlay);
+    const iv = setInterval(() => {
+      left--;
+      cnt.textContent = String(left);
+      if (left <= 0) done();
+    }, 1000);
+    skip.addEventListener("click", done);
+    function done() {
+      clearInterval(iv);
+      overlay.remove();
+      res();
+    }
+  });
+}
+
+async function finishSession(engine) {
+  // Streak nur zaehlen, wenn wirklich geuebt wurde.
+  if (engine.count > 0) {
+    const today = dayStr(new Date());
+    const last = await store.getMeta("lastSessionDay", null);
+    if (last !== today) {
+      const yesterday = dayStr(new Date(Date.now() - DAY));
+      const streak = await store.getMeta("streak", 0);
+      await store.setMeta("streak", last === yesterday ? streak + 1 : 1);
+      await store.setMeta("lastSessionDay", today);
+    }
+  }
+
+  const app = root();
+  app.innerHTML = "";
+  const view = el("div", "view done");
+  view.appendChild(el("div", "done-emoji", "✓"));
+  view.appendChild(el("h2", "done-title", "Einheit geschafft"));
+  const pct = engine.count ? Math.round((engine.correct / engine.count) * 100) : 0;
+  const summary = el("div", "done-stats");
+  summary.appendChild(stat("🎯", `${engine.correct}/${engine.count}`, "richtig"));
+  summary.appendChild(stat("📈", pct + "%", "Trefferquote"));
+  summary.appendChild(stat("🔥", await store.getMeta("streak", 0), "Tage"));
+  view.appendChild(summary);
+
+  const again = el("button", "btn primary big", "Noch eine Einheit");
+  again.addEventListener("click", runSession);
+  view.appendChild(again);
+  const home = el("button", "btn ghost", "Zur Startseite");
+  home.addEventListener("click", showHome);
+  view.appendChild(home);
+  app.appendChild(view);
+}
+
+// ---------- Freies Spiel ----------
+function showFreePlay() {
+  const app = root();
+  app.innerHTML = "";
+  const view = el("div", "view free");
+  const top = el("div", "session-top");
+  const back = el("button", "btn ghost small", "✕");
+  back.addEventListener("click", showHome);
+  top.appendChild(back);
+  top.appendChild(el("div", "prompt", "Freies Spiel"));
+  view.appendChild(top);
+
+  const info = el("p", "method-hint", "Einfach ausprobieren. Notennamen sind auf den weissen Tasten eingeblendet.");
+  view.appendChild(info);
+
+  const kbWrap = el("div", "keyboard-wrap tall");
+  view.appendChild(kbWrap);
+  app.appendChild(view);
+  const kb = buildKeyboard(kbWrap, { low: piano.lowestMidi, high: piano.highestMidi });
+  kb.labelWhites(settings.naming);
+}
+
+// ---------- Einstellungen ----------
+async function showSettings() {
+  const app = root();
+  app.innerHTML = "";
+  const view = el("div", "view settings");
+  const top = el("div", "session-top");
+  const back = el("button", "btn ghost small", "✕");
+  back.addEventListener("click", showHome);
+  top.appendChild(back);
+  top.appendChild(el("div", "prompt", "Einstellungen"));
+  view.appendChild(top);
+
+  view.appendChild(
+    choiceRow("Länge der Einheit", [5, 10, 15, 20], settings.length, (v) => {
+      settings.length = v;
+      saveSettings();
+    }, (v) => v + " Min")
+  );
+  view.appendChild(
+    choiceRow("Notennamen", ["de", "int"], settings.naming, (v) => {
+      settings.naming = v;
+      saveSettings();
+    }, (v) => (v === "de" ? "Deutsch (H)" : "International (B)"))
+  );
+  view.appendChild(
+    choiceRow("Notennamen auf Tasten", [false, true], settings.showKeyLabels, (v) => {
+      settings.showKeyLabels = v;
+      saveSettings();
+    }, (v) => (v ? "an" : "aus"))
+  );
+
+  // MIDI
+  const midiRow = el("div", "setting-row");
+  midiRow.appendChild(el("div", "setting-label", "Echtes Keyboard (MIDI)"));
+  const midiBtn = el("button", "btn ghost small", isMidiEnabled() ? "verbunden" : "verbinden");
+  const midiStatus = el("div", "setting-note", "Auf dem iPhone nicht verfügbar, dort Touch nutzen.");
+  midiBtn.addEventListener("click", async () => {
+    await initMidi((s) => (midiStatus.textContent = s));
+  });
+  midiRow.appendChild(midiBtn);
+  midiRow.appendChild(midiStatus);
+  view.appendChild(midiRow);
+
+  // Daten
+  const dataRow = el("div", "setting-row");
+  dataRow.appendChild(el("div", "setting-label", "Fortschritt sichern"));
+  const exp = el("button", "btn ghost small", "Export");
+  exp.addEventListener("click", exportData);
+  const imp = el("button", "btn ghost small", "Import");
+  const file = el("input");
+  file.type = "file";
+  file.accept = "application/json";
+  file.style.display = "none";
+  file.addEventListener("change", importData);
+  imp.addEventListener("click", () => file.click());
+  dataRow.appendChild(exp);
+  dataRow.appendChild(imp);
+  dataRow.appendChild(file);
+  dataRow.appendChild(el("div", "setting-note", "iOS kann lokalen Speicher löschen, ab und zu sichern."));
+  view.appendChild(dataRow);
+
+  const reset = el("button", "btn danger", "Fortschritt zurücksetzen");
+  reset.addEventListener("click", async () => {
+    if (confirm("Wirklich allen Fortschritt löschen?")) {
+      await store.clearCards();
+      await store.setMeta("streak", 0);
+      await store.setMeta("lastSessionDay", null);
+      showHome();
+    }
+  });
+  view.appendChild(reset);
+
+  view.appendChild(el("p", "version-note", "Version 0.1 · privat"));
+  app.appendChild(view);
+}
+
+function choiceRow(label, options, current, onPick, fmt) {
+  const row = el("div", "setting-row");
+  row.appendChild(el("div", "setting-label", label));
+  const group = el("div", "seg");
+  options.forEach((opt) => {
+    const b = el("button", "seg-btn" + (opt === current ? " on" : ""), fmt ? fmt(opt) : String(opt));
+    b.addEventListener("click", () => {
+      group.querySelectorAll(".seg-btn").forEach((x) => x.classList.remove("on"));
+      b.classList.add("on");
+      onPick(opt);
+    });
+    group.appendChild(b);
+  });
+  row.appendChild(group);
+  return row;
+}
+
+async function saveSettings() {
+  await store.setMeta("settings", settings);
+}
+
+async function exportData() {
+  const data = await store.exportAll();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "instrumente-lernen-sicherung.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importData(e) {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    await store.importAll(data);
+    if (data.meta && data.meta.settings) settings = { ...DEFAULT_SETTINGS, ...data.meta.settings };
+    alert("Fortschritt geladen.");
+    showHome();
+  } catch (err) {
+    alert("Konnte die Datei nicht lesen: " + err.message);
+  }
+}
