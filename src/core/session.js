@@ -1,15 +1,18 @@
-// Sitzungslogik: 15 bis 20 Minuten, intern kurze abwechselnde Aufgaben (Interleaving),
-// Spaced Repetition entscheidet, was drankommt. Rendering passiert in der UI.
+// Sitzungslogik mit verschiedenen Modi. 15 bis 20 Minuten, intern kurze
+// abwechselnde Aufgaben (Interleaving), Spaced Repetition entscheidet, was
+// drankommt. Rendering passiert in der UI.
 import { Scheduler } from "./scheduler.js";
 import { makeReadTask, makeEarTask } from "../modules/noteRecognition.js";
 
+// mode: "daily" (gemischt lesen + Gehoer), "read" (nur Noten lesen), "ear" (nur Gehoer)
 export class SessionEngine {
-  constructor(store, curriculum, { durationMin = 15, naming = "de", earRatio = 0.25 } = {}) {
+  constructor(store, curriculum, { durationMin = 15, naming = "de", mode = "daily" } = {}) {
     this.store = store;
     this.sched = new Scheduler(store, curriculum, { newPerSession: 6 });
     this.durationMs = durationMin * 60 * 1000;
     this.naming = naming;
-    this.earRatio = earRatio;
+    this.mode = mode;
+    this.earRatio = mode === "ear" ? 1 : mode === "read" ? 0 : 0.3;
     this.count = 0;
     this.correct = 0;
     this.startedAt = Date.now();
@@ -32,9 +35,12 @@ export class SessionEngine {
     const now = Date.now();
     const entry = await this.sched.next(now);
     if (!entry) return null;
-    // Gehoer-Aufgabe nur fuer Noten, die schon einmal gelesen wurden.
     const card = await this.store.getCard(entry.id);
-    const useEar = card && card.seen && this.count > 1 && Math.random() < this.earRatio;
+    // Gehoer-Aufgabe nur fuer Noten, die schon einmal gelesen wurden.
+    let useEar;
+    if (this.mode === "ear") useEar = true;
+    else if (this.mode === "read") useEar = false;
+    else useEar = card && card.seen && this.count > 1 && Math.random() < this.earRatio;
     const task = useEar
       ? makeEarTask(entry, this.naming)
       : makeReadTask(entry, this.naming);

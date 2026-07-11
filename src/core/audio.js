@@ -1,6 +1,8 @@
 // Klang-Engine auf Basis der Web Audio API. Keine Abhaengigkeiten, laeuft offline.
-// Ein waermerer, klavieraehnlicher Ton aus zwei Oszillatoren mit Huellkurve.
-// Sampled Steinway-Klang (smplr) kann spaeter hier nachgeruestet werden.
+// Klavieraehnlicher Ton per additiver Synthese: Grundton plus mehrere Obertoene
+// mit abfallender Lautstaerke, schneller Anschlag, dann weiches Ausklingen, plus
+// ein Tiefpass, der ueber die Zeit dunkler wird. Klingt deutlich natuerlicher als
+// ein einzelner Oszillator. (Sampled Steinway ueber smplr ist spaeter nachruestbar.)
 import { midiFreq } from "./theory.js";
 
 let ctx = null;
@@ -15,46 +17,64 @@ export function ensureAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   ctx = new AC();
   master = ctx.createGain();
-  master.gain.value = 0.85;
+  master.gain.value = 0.9;
   master.connect(ctx.destination);
   return ctx;
 }
 
-export function playNote(midi, { velocity = 0.8, duration = 1.2 } = {}) {
+// relative Lautstaerke der Obertoene 1..7 (klavieraehnliches Spektrum)
+const PARTIALS = [1, 0.55, 0.4, 0.28, 0.16, 0.09, 0.05];
+
+export function playNote(midi, { velocity = 0.85, duration } = {}) {
   const c = ensureAudio();
   const now = c.currentTime;
   const freq = midiFreq(midi);
+  // tiefe Toene klingen laenger nach als hohe
+  const dur = duration || Math.max(0.9, 2.6 - (midi - 36) * 0.02);
 
-  const g = c.createGain();
+  const voice = c.createGain();
   const filt = c.createBiquadFilter();
   filt.type = "lowpass";
-  filt.frequency.value = Math.min(9000, freq * 6);
-
-  const o1 = c.createOscillator();
-  o1.type = "triangle";
-  o1.frequency.value = freq;
-  const o2 = c.createOscillator();
-  o2.type = "sine";
-  o2.frequency.value = freq * 2;
-  const o2g = c.createGain();
-  o2g.gain.value = 0.22;
-
-  o1.connect(g);
-  o2.connect(o2g);
-  o2g.connect(g);
-  g.connect(filt);
+  filt.frequency.setValueAtTime(Math.min(11000, freq * 8), now);
+  filt.frequency.exponentialRampToValueAtTime(Math.max(700, freq * 2.2), now + dur);
+  filt.Q.value = 0.4;
+  voice.connect(filt);
   filt.connect(master);
 
-  const peak = 0.3 * velocity;
-  g.gain.setValueAtTime(0.0001, now);
-  g.gain.linearRampToValueAtTime(peak, now + 0.006);
-  g.gain.exponentialRampToValueAtTime(peak * 0.55, now + 0.16);
-  g.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  // Huellkurve der Gesamtstimme: sehr schneller Anschlag, dann exponentielles Ausklingen
+  const peak = 0.22 * velocity;
+  voice.gain.setValueAtTime(0.0001, now);
+  voice.gain.linearRampToValueAtTime(peak, now + 0.005);
+  voice.gain.exponentialRampToValueAtTime(peak * 0.3, now + 0.35);
+  voice.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
-  o1.start(now);
-  o2.start(now);
-  o1.stop(now + duration + 0.05);
-  o2.stop(now + duration + 0.05);
+  const oscs = [];
+  PARTIALS.forEach((amp, i) => {
+    const n = i + 1;
+    const o = c.createOscillator();
+    o.type = "sine";
+    // leichte Verstimmung der Obertoene fuer mehr Waerme (Inharmonizitaet)
+    o.frequency.value = freq * n * (1 + i * 0.0006);
+    const g = c.createGain();
+    g.gain.value = amp;
+    o.connect(g);
+    g.connect(voice);
+    o.start(now);
+    o.stop(now + dur + 0.05);
+    oscs.push(o);
+  });
+
+  // kurzer Anschlags-"Klopfer" fuer mehr Attack
+  const thump = c.createOscillator();
+  thump.type = "triangle";
+  thump.frequency.value = freq;
+  const tg = c.createGain();
+  tg.gain.setValueAtTime(0.12 * velocity, now);
+  tg.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
+  thump.connect(tg);
+  tg.connect(filt);
+  thump.start(now);
+  thump.stop(now + 0.08);
 }
 
 // Metronom-Klick fuer spaetere Rhythmus-Module.

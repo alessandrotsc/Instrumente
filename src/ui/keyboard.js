@@ -1,25 +1,30 @@
-// Virtuelle Klaviatur (Touch) als vollwertiger Eingabeweg. MIDI-Tasten werden
-// ueber dieselbe Eingabe-Schnittstelle sichtbar gemacht.
+// Virtuelle Klaviatur (Touch) als vollwertiger Eingabeweg. Feste, breite Tasten
+// (gut mit dem Finger treffbar), horizontal scrollbar. MIDI-Tasten werden ueber
+// dieselbe Eingabe-Schnittstelle sichtbar gemacht.
 import { feedNote, onNote } from "../core/input.js";
 import { isWhite, noteName } from "../core/theory.js";
 
 const BLACK_PC = [1, 3, 6, 8, 10];
+const WHITE_W = 52; // Breite einer weissen Taste in Pixel
+const BLACK_W = 32;
 
-export function buildKeyboard(container, { low = 48, high = 84, onPress } = {}) {
+export function buildKeyboard(container, { low = 48, high = 72, center = 60, onPress } = {}) {
   container.innerHTML = "";
+  container.classList.add("keyboard-scroll");
+
   const kb = document.createElement("div");
   kb.className = "keyboard";
 
   const whites = [];
   for (let m = low; m <= high; m++) if (isWhite(m)) whites.push(m);
-  const whiteW = 100 / whites.length;
+  kb.style.width = whites.length * WHITE_W + "px";
   const keyEls = new Map();
 
   whites.forEach((m) => {
     const k = document.createElement("div");
     k.className = "key white";
     k.dataset.midi = m;
-    k.style.width = whiteW + "%";
+    k.style.width = WHITE_W + "px";
     kb.appendChild(k);
     keyEls.set(m, k);
   });
@@ -31,8 +36,8 @@ export function buildKeyboard(container, { low = 48, high = 84, onPress } = {}) 
     const k = document.createElement("div");
     k.className = "key black";
     k.dataset.midi = m;
-    k.style.left = `calc(${(idx + 1) * whiteW}% - ${whiteW * 0.3}%)`;
-    k.style.width = whiteW * 0.6 + "%";
+    k.style.left = (idx + 1) * WHITE_W - BLACK_W / 2 + "px";
+    k.style.width = BLACK_W + "px";
     kb.appendChild(k);
     keyEls.set(m, k);
   }
@@ -64,9 +69,20 @@ export function buildKeyboard(container, { low = 48, high = 84, onPress } = {}) 
     setTimeout(() => el.classList.remove(cls), 700);
   }
 
+  // Anfangs mittig auf das mittlere C scrollen.
+  requestAnimationFrame(() => scrollToMidi(center, false));
+
+  function scrollToMidi(m, smooth = true) {
+    const el = keyEls.get(m) || keyEls.get(m - 1) || keyEls.get(m + 1);
+    if (!el) return;
+    const target = el.offsetLeft + el.offsetWidth / 2 - container.clientWidth / 2;
+    container.scrollTo({ left: Math.max(0, target), behavior: smooth ? "smooth" : "auto" });
+  }
+
   return {
     el: kb,
     keyEls,
+    scrollToMidi,
     markCorrect(m) {
       pulse(keyEls.get(m), "correct");
     },
@@ -74,7 +90,6 @@ export function buildKeyboard(container, { low = 48, high = 84, onPress } = {}) 
       pulse(keyEls.get(m), "wrong");
     },
     setLabels(fn) {
-      // fn(midi) -> Text oder null
       keyEls.forEach((el, m) => {
         const t = fn(m);
         if (t) {

@@ -1,8 +1,9 @@
 // Alle Bildschirme der App und der Ablauf einer Lern-Sitzung.
+// Fluss: Instrument waehlen -> Modus waehlen -> Lernen.
 import { store } from "../core/store.js";
 import { SessionEngine } from "../core/session.js";
 import { buildKeyboard } from "./keyboard.js";
-import { piano, noteCurriculum } from "../instruments/piano.js";
+import { INSTRUMENTS, getInstrument } from "../instruments/registry.js";
 import { ensureAudio } from "../core/audio.js";
 import { initMidi, isMidiEnabled } from "../core/input.js";
 
@@ -10,6 +11,8 @@ const DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SETTINGS = { length: 15, naming: "de", showKeyLabels: false };
 
 let settings = { ...DEFAULT_SETTINGS };
+let current = null; // aktuell gewaehltes Instrument (aus der Registry)
+
 const root = () => document.getElementById("app");
 
 function el(tag, cls, text) {
@@ -24,71 +27,6 @@ function dayStr(d) {
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-
-export async function boot() {
-  showHome(); // sofort zeichnen, damit nichts auf IndexedDB warten muss
-  try {
-    const s = await store.getMeta("settings", {});
-    settings = { ...DEFAULT_SETTINGS, ...s };
-    showHome(); // mit echten Einstellungen auffrischen
-  } catch (e) {
-    /* Startseite steht bereits mit Standardwerten */
-  }
-}
-
-// ---------- Startseite ----------
-function showHome() {
-  const app = root();
-  app.innerHTML = "";
-
-  const view = el("div", "view home");
-
-  const header = el("header", "app-header");
-  header.appendChild(el("h1", "app-title", "Instrumente lernen"));
-  header.appendChild(el("p", "app-sub", piano.name));
-  view.appendChild(header);
-
-  const stats = el("div", "stat-row");
-  const streakStat = stat("🔥", "·", "Tage");
-  const learnedStat = stat("🎹", `·/${noteCurriculum.length}`, "Noten sitzen");
-  stats.appendChild(streakStat);
-  stats.appendChild(learnedStat);
-  view.appendChild(stats);
-
-  // Werte nachladen, ohne das erste Zeichnen zu blockieren.
-  Promise.all([store.allCards(), store.getMeta("streak", 0)])
-    .then(([cards, streak]) => {
-      const learned = cards.filter((c) => c.box >= 1).length;
-      streakStat.querySelector(".stat-value").textContent = String(streak);
-      streakStat.querySelector(".stat-label").textContent = streak === 1 ? "Tag" : "Tage";
-      learnedStat.querySelector(".stat-value").textContent = `${learned}/${noteCurriculum.length}`;
-    })
-    .catch(() => {});
-
-  const primary = el("button", "btn primary big", `Heute üben · ${settings.length} Min`);
-  primary.addEventListener("click", () => {
-    ensureAudio();
-    runSession();
-  });
-  view.appendChild(primary);
-
-  const free = el("button", "btn ghost", "Freies Spiel");
-  free.addEventListener("click", () => {
-    ensureAudio();
-    showFreePlay();
-  });
-  view.appendChild(free);
-
-  const gear = el("button", "btn ghost small", "⚙︎ Einstellungen");
-  gear.addEventListener("click", showSettings);
-  view.appendChild(gear);
-
-  const hint = el("p", "method-hint", "Klang vor Zeichen: erst hören und spielen, dann lesen. Täglich kurz schlägt selten lang.");
-  view.appendChild(hint);
-
-  app.appendChild(view);
-}
-
 function stat(icon, value, label) {
   const s = el("div", "stat");
   s.appendChild(el("div", "stat-icon", icon));
@@ -97,20 +35,139 @@ function stat(icon, value, label) {
   return s;
 }
 
-// ---------- Lern-Sitzung ----------
-async function runSession() {
+export async function boot() {
+  showInstruments();
+  try {
+    const s = await store.getMeta("settings", {});
+    settings = { ...DEFAULT_SETTINGS, ...s };
+  } catch (e) {
+    /* Standardwerte reichen */
+  }
+}
+
+// ---------- Instrument-Auswahl ----------
+function showInstruments() {
   const app = root();
   app.innerHTML = "";
-  const engine = new SessionEngine(store, noteCurriculum, {
+  const view = el("div", "view");
+
+  const header = el("header", "app-header");
+  header.appendChild(el("div", "eyebrow", "Instrumente lernen"));
+  header.appendChild(el("h1", "app-title", "Was moechtest du lernen?"));
+  header.appendChild(el("p", "app-sub", "Waehle dein Instrument"));
+  view.appendChild(header);
+
+  const grid = el("div", "inst-grid");
+  INSTRUMENTS.forEach((inst) => {
+    const card = el("div", "inst-card" + (inst.available ? "" : " soon"));
+    card.appendChild(el("div", "emoji", inst.emoji));
+    card.appendChild(el("div", "name", inst.name));
+    if (!inst.available) card.appendChild(el("div", "badge", "bald"));
+    if (inst.available) {
+      card.addEventListener("click", () => {
+        ensureAudio();
+        current = inst;
+        showModes();
+      });
+    }
+    grid.appendChild(card);
+  });
+  view.appendChild(grid);
+
+  view.appendChild(
+    el("p", "method-hint", "Prinzip Klang vor Zeichen: erst hoeren und spielen, dann lesen. Taeglich kurz schlaegt selten lang.")
+  );
+  app.appendChild(view);
+}
+
+// ---------- Modus-Menue ----------
+function showModes() {
+  const app = root();
+  app.innerHTML = "";
+  const view = el("div", "view");
+
+  const bar = el("div", "topbar");
+  const back = el("button", "iconbtn", "‹");
+  back.addEventListener("click", showInstruments);
+  bar.appendChild(back);
+  bar.appendChild(el("div", "title", `${current.emoji}  ${current.name}`));
+  const gear = el("button", "iconbtn", "⚙︎");
+  gear.addEventListener("click", showSettings);
+  bar.appendChild(gear);
+  view.appendChild(bar);
+
+  const stats = el("div", "stat-row");
+  const streakStat = stat("🔥", "·", "Tage");
+  const learnedStat = stat("🎼", `·/${current.curriculum.length}`, "Noten sitzen");
+  stats.appendChild(streakStat);
+  stats.appendChild(learnedStat);
+  view.appendChild(stats);
+
+  Promise.all([store.allCards(), store.getMeta("streak", 0)])
+    .then(([cards, streak]) => {
+      const ids = new Set(current.curriculum.map((c) => c.id));
+      const learned = cards.filter((c) => ids.has(c.id) && c.box >= 1).length;
+      streakStat.querySelector(".stat-value").textContent = String(streak);
+      streakStat.querySelector(".stat-label").textContent = streak === 1 ? "Tag" : "Tage";
+      learnedStat.querySelector(".stat-value").textContent = `${learned}/${current.curriculum.length}`;
+    })
+    .catch(() => {});
+
+  const list = el("div", "mode-list");
+  list.appendChild(
+    modeCard("🎯", "Tagestraining", `Gemischt, ${settings.length} Min, empfohlen`, "hero", () =>
+      runSession("daily")
+    )
+  );
+  list.appendChild(modeCard("🎼", "Noten lesen", "Note sehen, richtige Taste druecken", "", () => runSession("read")));
+  list.appendChild(modeCard("👂", "Gehoer", "Ton hoeren, Taste finden", "", () => runSession("ear")));
+  list.appendChild(modeCard("🎹", "Freies Spiel", "Einfach ausprobieren mit Notennamen", "", showFreePlay));
+  list.appendChild(soonCard("✋", "Fingersatz", "Tonleitern und Daumenuntersatz"));
+  list.appendChild(soonCard("🥁", "Rhythmus", "Timing und Metronom"));
+  list.appendChild(soonCard("🎵", "Stuecke", "Lieder in kleinen Haeppchen"));
+  view.appendChild(list);
+
+  app.appendChild(view);
+}
+
+function modeCard(icon, title, sub, extra, onClick) {
+  const c = el("button", "mode-card " + extra);
+  c.appendChild(el("div", "mode-ic", icon));
+  const t = el("div", "mode-txt");
+  t.appendChild(el("div", "mode-title", title));
+  t.appendChild(el("div", "mode-sub", sub));
+  c.appendChild(t);
+  c.appendChild(el("div", "mode-chevron", "›"));
+  c.addEventListener("click", onClick);
+  return c;
+}
+function soonCard(icon, title, sub) {
+  const c = el("div", "mode-card soon");
+  c.appendChild(el("div", "mode-ic", icon));
+  const t = el("div", "mode-txt");
+  t.appendChild(el("div", "mode-title", title));
+  t.appendChild(el("div", "mode-sub", sub));
+  c.appendChild(t);
+  c.appendChild(el("div", "mode-badge", "bald"));
+  return c;
+}
+
+// ---------- Lern-Sitzung ----------
+async function runSession(mode) {
+  ensureAudio();
+  const app = root();
+  app.innerHTML = "";
+  const engine = new SessionEngine(store, current.curriculum, {
     durationMin: settings.length,
     naming: settings.naming,
+    mode,
   });
 
-  const view = el("div", "view session");
+  const view = el("div", "view");
 
   const top = el("div", "session-top");
-  const close = el("button", "btn ghost small", "✕");
-  close.addEventListener("click", () => showHome());
+  const close = el("button", "iconbtn", "✕");
+  close.addEventListener("click", showModes);
   const bar = el("div", "progress");
   const barFill = el("div", "progress-fill");
   bar.appendChild(barFill);
@@ -122,20 +179,22 @@ async function runSession() {
 
   const prompt = el("div", "prompt", "");
   view.appendChild(prompt);
-  const stimulus = el("div", "stimulus", "");
-  view.appendChild(stimulus);
+  const stimWrap = el("div", "stimulus", "");
+  const stimCard = el("div", "staff-card");
+  stimWrap.appendChild(stimCard);
+  view.appendChild(stimWrap);
   const feedback = el("div", "feedback", "");
   view.appendChild(feedback);
 
-  const kbWrap = el("div", "keyboard-wrap");
+  const kbWrap = el("div", "");
   view.appendChild(kbWrap);
   app.appendChild(view);
 
-  // Antwort-Weiterleitung: die Klaviatur ruft answer() beim Tastendruck.
   let answer = null;
   const kb = buildKeyboard(kbWrap, {
-    low: piano.lowestMidi,
-    high: piano.highestMidi,
+    low: current.config.lowestMidi,
+    high: current.config.highestMidi,
+    center: current.config.centerMidi,
     onPress: (midi) => {
       if (answer) answer(midi);
     },
@@ -152,10 +211,10 @@ async function runSession() {
     while (!engine.done) {
       const task = await engine.nextTask();
       if (!task) break;
-      prompt.textContent = task.kind === "ear" ? "Gehör" : "Noten lesen";
-      const sub = el("div", "prompt-sub", task.prompt);
-      prompt.appendChild(sub);
-      task.render(stimulus);
+      prompt.textContent = task.kind === "ear" ? "Gehoer" : "Noten lesen";
+      prompt.appendChild(el("div", "prompt-sub", task.prompt));
+      task.render(stimCard);
+      kb.scrollToMidi(task.targetMidi);
       feedback.textContent = "";
       feedback.className = "feedback";
 
@@ -227,7 +286,6 @@ function microPause(view) {
 }
 
 async function finishSession(engine) {
-  // Streak nur zaehlen, wenn wirklich geuebt wurde.
   if (engine.count > 0) {
     const today = dayStr(new Date());
     const last = await store.getMeta("lastSessionDay", null);
@@ -251,34 +309,39 @@ async function finishSession(engine) {
   summary.appendChild(stat("🔥", await store.getMeta("streak", 0), "Tage"));
   view.appendChild(summary);
 
-  const again = el("button", "btn primary big", "Noch eine Einheit");
-  again.addEventListener("click", runSession);
+  const again = el("button", "btn primary big", "Weiter ueben");
+  again.addEventListener("click", showModes);
   view.appendChild(again);
-  const home = el("button", "btn ghost", "Zur Startseite");
-  home.addEventListener("click", showHome);
+  const home = el("button", "btn ghost", "Instrument wechseln");
+  home.addEventListener("click", showInstruments);
   view.appendChild(home);
   app.appendChild(view);
 }
 
 // ---------- Freies Spiel ----------
 function showFreePlay() {
+  ensureAudio();
   const app = root();
   app.innerHTML = "";
-  const view = el("div", "view free");
-  const top = el("div", "session-top");
-  const back = el("button", "btn ghost small", "✕");
-  back.addEventListener("click", showHome);
-  top.appendChild(back);
-  top.appendChild(el("div", "prompt", "Freies Spiel"));
-  view.appendChild(top);
+  const view = el("div", "view");
+  const bar = el("div", "topbar");
+  const back = el("button", "iconbtn", "‹");
+  back.addEventListener("click", showModes);
+  bar.appendChild(back);
+  bar.appendChild(el("div", "title", "Freies Spiel"));
+  view.appendChild(bar);
 
-  const info = el("p", "method-hint", "Einfach ausprobieren. Notennamen sind auf den weissen Tasten eingeblendet.");
-  view.appendChild(info);
+  view.appendChild(el("p", "method-hint", "Einfach ausprobieren. Die Notennamen stehen auf den weissen Tasten."));
 
-  const kbWrap = el("div", "keyboard-wrap tall");
+  const kbWrap = el("div", "");
   view.appendChild(kbWrap);
   app.appendChild(view);
-  const kb = buildKeyboard(kbWrap, { low: piano.lowestMidi, high: piano.highestMidi });
+  const kb = buildKeyboard(kbWrap, {
+    low: current.config.lowestMidi,
+    high: current.config.highestMidi,
+    center: current.config.centerMidi,
+  });
+  kbWrap.classList.add("tall");
   kb.labelWhites(settings.naming);
 }
 
@@ -286,16 +349,16 @@ function showFreePlay() {
 async function showSettings() {
   const app = root();
   app.innerHTML = "";
-  const view = el("div", "view settings");
-  const top = el("div", "session-top");
-  const back = el("button", "btn ghost small", "✕");
-  back.addEventListener("click", showHome);
-  top.appendChild(back);
-  top.appendChild(el("div", "prompt", "Einstellungen"));
-  view.appendChild(top);
+  const view = el("div", "view");
+  const bar = el("div", "topbar");
+  const back = el("button", "iconbtn", "‹");
+  back.addEventListener("click", () => (current ? showModes() : showInstruments()));
+  bar.appendChild(back);
+  bar.appendChild(el("div", "title", "Einstellungen"));
+  view.appendChild(bar);
 
   view.appendChild(
-    choiceRow("Länge der Einheit", [5, 10, 15, 20], settings.length, (v) => {
+    choiceRow("Laenge der Einheit", [5, 10, 15, 20], settings.length, (v) => {
       settings.length = v;
       saveSettings();
     }, (v) => v + " Min")
@@ -313,11 +376,10 @@ async function showSettings() {
     }, (v) => (v ? "an" : "aus"))
   );
 
-  // MIDI
   const midiRow = el("div", "setting-row");
   midiRow.appendChild(el("div", "setting-label", "Echtes Keyboard (MIDI)"));
   const midiBtn = el("button", "btn ghost small", isMidiEnabled() ? "verbunden" : "verbinden");
-  const midiStatus = el("div", "setting-note", "Auf dem iPhone nicht verfügbar, dort Touch nutzen.");
+  const midiStatus = el("div", "setting-note", "Auf dem iPhone nicht verfuegbar, dort Touch nutzen.");
   midiBtn.addEventListener("click", async () => {
     await initMidi((s) => (midiStatus.textContent = s));
   });
@@ -325,7 +387,6 @@ async function showSettings() {
   midiRow.appendChild(midiStatus);
   view.appendChild(midiRow);
 
-  // Daten
   const dataRow = el("div", "setting-row");
   dataRow.appendChild(el("div", "setting-label", "Fortschritt sichern"));
   const exp = el("button", "btn ghost small", "Export");
@@ -340,30 +401,30 @@ async function showSettings() {
   dataRow.appendChild(exp);
   dataRow.appendChild(imp);
   dataRow.appendChild(file);
-  dataRow.appendChild(el("div", "setting-note", "iOS kann lokalen Speicher löschen, ab und zu sichern."));
+  dataRow.appendChild(el("div", "setting-note", "iOS kann lokalen Speicher loeschen, ab und zu sichern."));
   view.appendChild(dataRow);
 
-  const reset = el("button", "btn danger", "Fortschritt zurücksetzen");
+  const reset = el("button", "btn danger", "Fortschritt zuruecksetzen");
   reset.addEventListener("click", async () => {
-    if (confirm("Wirklich allen Fortschritt löschen?")) {
+    if (confirm("Wirklich allen Fortschritt loeschen?")) {
       await store.clearCards();
       await store.setMeta("streak", 0);
       await store.setMeta("lastSessionDay", null);
-      showHome();
+      current ? showModes() : showInstruments();
     }
   });
   view.appendChild(reset);
 
-  view.appendChild(el("p", "version-note", "Version 0.1 · privat"));
+  view.appendChild(el("p", "version-note", "Version 0.2 · privat"));
   app.appendChild(view);
 }
 
-function choiceRow(label, options, current, onPick, fmt) {
+function choiceRow(label, options, currentVal, onPick, fmt) {
   const row = el("div", "setting-row");
   row.appendChild(el("div", "setting-label", label));
   const group = el("div", "seg");
   options.forEach((opt) => {
-    const b = el("button", "seg-btn" + (opt === current ? " on" : ""), fmt ? fmt(opt) : String(opt));
+    const b = el("button", "seg-btn" + (opt === currentVal ? " on" : ""), fmt ? fmt(opt) : String(opt));
     b.addEventListener("click", () => {
       group.querySelectorAll(".seg-btn").forEach((x) => x.classList.remove("on"));
       b.classList.add("on");
@@ -398,7 +459,7 @@ async function importData(e) {
     await store.importAll(data);
     if (data.meta && data.meta.settings) settings = { ...DEFAULT_SETTINGS, ...data.meta.settings };
     alert("Fortschritt geladen.");
-    showHome();
+    current ? showModes() : showInstruments();
   } catch (err) {
     alert("Konnte die Datei nicht lesen: " + err.message);
   }
