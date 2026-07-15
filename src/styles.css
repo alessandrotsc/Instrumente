@@ -130,13 +130,23 @@ body {
 .prompt { text-align: center; font-size: 20px; font-weight: 800; }
 .prompt-sub { font-size: 14px; color: var(--text-dim); font-weight: 500; margin-top: 4px; }
 
-.stimulus { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 170px; }
-.staff-card { background: var(--glas); border: 1px solid var(--line); border-radius: 20px; padding: 6px 10px; }
-.staff { width: min(320px, 84vw); height: auto; }
-.staff-line, .ledger { stroke: #cfe3f2; stroke-width: 1.7; }
-.clef { fill: #eaf4ff; font-size: 74px; dominant-baseline: middle; }
-.notehead { fill: var(--cyan-hell); }
-.stem { stroke: var(--cyan-hell); stroke-width: 2.4; }
+.stimulus { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 150px; }
+.staff-card { width: 100%; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28); }
+.staff.grand { display: block; width: 100%; height: auto; }
+
+/* Grand Staff (Violin- und Bassschluessel): dunkle, klare Notenschrift auf
+   hellem Streifen, gut lesbar aus einiger Entfernung am Klavier. */
+.staff-bg { fill: #eef1ea; }
+.gs-line { stroke: #808e98; stroke-width: 2.4; }
+.gs-ledger { stroke: #26323d; stroke-width: 3.2; }
+.gs-bracket { stroke: #15212d; stroke-width: 6; stroke-linecap: round; }
+.gs-clef { fill: #15212d; dominant-baseline: alphabetic; }
+.gs-note { fill: #14212e; transition: fill 0.2s ease; }
+.gs-stem { stroke: #14212e; stroke-width: 4; transition: stroke 0.2s ease; }
+.staff-card.good .gs-note { fill: #1f9d57; }
+.staff-card.good .gs-stem { stroke: #1f9d57; }
+.staff-card.bad .gs-note { fill: #d64545; }
+.staff-card.bad .gs-stem { stroke: #d64545; }
 
 .ear-play {
   background: linear-gradient(135deg, var(--cyan-hell), var(--cyan2)); border: 0; color: #042231;
@@ -199,11 +209,23 @@ body {
 .mic-meter { width: 64px; height: 8px; border-radius: 99px; background: var(--glas-stark); overflow: hidden; flex: none; }
 .mic-meter-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), var(--cyan-hell)); transition: width 0.08s linear; }
 
-/* Querformat am echten Klavier: grosse Note mittig, Bildschirm-Tastatur weg (mehr Platz). */
+/* Am echten Klavier lesen: die Note darf die Flaeche ausfuellen, breiter als sonst. */
+.view.session-live { max-width: 1000px; }
+.session-live .stimulus { min-height: 0; }
+
+/* Querformat (Handy quer am Klavier): kompaktere Raender, Note in der Hoehe
+   gedeckelt, damit Note UND Mikrofon-Leiste zusammen sichtbar bleiben. */
 @media (orientation: landscape) and (max-height: 560px) {
-  .mic-mode { gap: 8px; padding-top: calc(env(safe-area-inset-top) + 8px); }
-  .mic-mode .stimulus { min-height: 0; }
-  .mic-mode .keyboard-scroll { display: none; }
+  .session-live {
+    gap: 8px;
+    padding-top: calc(env(safe-area-inset-top) + 8px);
+    padding-bottom: calc(env(safe-area-inset-bottom) + 8px);
+  }
+  .session-live .prompt { font-size: 16px; }
+  .session-live .prompt-sub { font-size: 12px; }
+  .session-live .stimulus { min-height: 0; }
+  .session-live .staff-card { width: auto; max-width: 100%; }
+  .session-live .staff.grand { width: auto; height: 50vh; max-width: 100%; }
 }
 
 /* Pause */

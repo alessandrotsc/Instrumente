@@ -2,7 +2,7 @@
 // Web Audio API: Mikrofon -> AnalyserNode -> Autokorrelation -> naechste MIDI-Note.
 // Bewusst nur monophon (ein Ton nach dem anderen). Akkorde (mehrere Tasten
 // gleichzeitig) sind deutlich schwerer und kommen spaeter als eigener Modus.
-import { ensureAudio } from "./audio.js";
+import { ensureAudio, setPlayHook } from "./audio.js";
 import { midiFreq } from "./theory.js";
 
 let stream = null;
@@ -95,6 +95,13 @@ export async function startMic(onDetect, { minMidi = 36, maxMidi = 84, onLevel, 
   sourceNode.connect(analyser); // bewusst NICHT an die Ausgabe -> keine Rueckkopplung
   running = true;
 
+  // Spielt die App selbst einen Ton (Hoerbeispiel, Aufloesung), kurz "taub"
+  // stellen, damit dieser Ton nicht als Antwort des Spielers erkannt wird.
+  let suppressUntil = 0;
+  setPlayHook((midi, dur) => {
+    suppressUntil = performance.now() + dur * 1000 + 200;
+  });
+
   const rate = ctx.sampleRate;
   const minFreq = midiFreq(minMidi) * 0.97;
   const maxFreq = midiFreq(maxMidi) * 1.03;
@@ -116,6 +123,9 @@ export async function startMic(onDetect, { minMidi = 36, maxMidi = 84, onLevel, 
     analyser.getFloatTimeDomainData(buf);
     const { freq, rms } = detectFreq(buf, rate, minLag, maxLag);
     onLevel && onLevel(Math.min(1, rms * 6));
+
+    // Waehrend die App selbst klingt: nur Pegel zeigen, nichts erkennen.
+    if (ts < suppressUntil) return;
 
     if (freq <= 0) {
       // Nach kurzer Stille darf dieselbe Note wieder erkannt werden.
@@ -149,6 +159,7 @@ export async function startMic(onDetect, { minMidi = 36, maxMidi = 84, onLevel, 
 
 export function stopMic() {
   running = false;
+  setPlayHook(null);
   if (sourceNode) {
     try {
       sourceNode.disconnect();

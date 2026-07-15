@@ -25,12 +25,19 @@ export function ensureAudio() {
 // relative Lautstaerke der Obertoene 1..7 (klavieraehnliches Spektrum)
 const PARTIALS = [1, 0.55, 0.4, 0.28, 0.16, 0.09, 0.05];
 
+// Hook, damit die Mikrofon-Erkennung die eigenen Toene der App ignorieren kann.
+let playHook = null;
+export function setPlayHook(fn) {
+  playHook = fn;
+}
+
 export function playNote(midi, { velocity = 0.85, duration } = {}) {
   const c = ensureAudio();
   const now = c.currentTime;
   const freq = midiFreq(midi);
   // tiefe Toene klingen laenger nach als hohe
   const dur = duration || Math.max(0.9, 2.6 - (midi - 36) * 0.02);
+  if (playHook) playHook(midi, dur);
 
   const voice = c.createGain();
   const filt = c.createBiquadFilter();

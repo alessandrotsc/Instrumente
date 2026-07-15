@@ -11,7 +11,7 @@ export function makeReadTask(entry, naming) {
     kind: "read",
     entry,
     targetMidi: entry.midi,
-    prompt: "Welche Taste ist das?",
+    prompt: "Spiel diese Note am Klavier",
     label: noteLabel(entry.midi, naming),
     render(container) {
       container.innerHTML = "";

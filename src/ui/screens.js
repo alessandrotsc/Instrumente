@@ -2,15 +2,14 @@
 // Fluss: Instrument waehlen -> Modus waehlen -> Lernen.
 import { store } from "../core/store.js";
 import { SessionEngine } from "../core/session.js";
-import { buildKeyboard } from "./keyboard.js";
 import { INSTRUMENTS, getInstrument } from "../instruments/registry.js";
 import { ensureAudio } from "../core/audio.js";
-import { initMidi, isMidiEnabled, feedNote } from "../core/input.js";
+import { initMidi, isMidiEnabled, feedNote, onNote } from "../core/input.js";
 import { startMic, stopMic } from "../core/pitch.js";
 import { chromaticLabel } from "../core/theory.js";
 
 const DAY = 24 * 60 * 60 * 1000;
-const DEFAULT_SETTINGS = { length: 15, naming: "de", showKeyLabels: false };
+const DEFAULT_SETTINGS = { length: 15, naming: "de" };
 
 let settings = { ...DEFAULT_SETTINGS };
 let current = null; // aktuell gewaehltes Instrument (aus der Registry)
@@ -121,14 +120,8 @@ function showModes() {
       runSession("daily")
     )
   );
-  list.appendChild(modeCard("🎼", "Noten lesen", "Note sehen, richtige Taste druecken", "", () => runSession("read")));
-  list.appendChild(modeCard("👂", "Gehoer", "Ton hoeren, Taste finden", "", () => runSession("ear")));
-  list.appendChild(
-    modeCard("🎤", "Am echten Klavier", "Note lesen und am echten Klavier spielen, das Mikrofon hoert zu", "", () =>
-      runSession("read", { mic: true })
-    )
-  );
-  list.appendChild(modeCard("🎹", "Freies Spiel", "Einfach ausprobieren mit Notennamen", "", showFreePlay));
+  list.appendChild(modeCard("🎼", "Noten lesen", "Note lesen und am Klavier spielen", "", () => runSession("read")));
+  list.appendChild(modeCard("👂", "Gehoer", "Ton hoeren und am Klavier nachspielen", "", () => runSession("ear")));
   list.appendChild(soonCard("✋", "Fingersatz", "Tonleitern und Daumenuntersatz"));
   list.appendChild(soonCard("🥁", "Rhythmus", "Timing und Metronom"));
   list.appendChild(soonCard("🎵", "Stuecke", "Lieder in kleinen Haeppchen"));
@@ -160,8 +153,9 @@ function soonCard(icon, title, sub) {
 }
 
 // ---------- Lern-Sitzung ----------
-// opts.mic = true: Antwort kommt vom echten Klavier ueber das Mikrofon.
-async function runSession(mode, opts = {}) {
+// Es wird ausschliesslich am echten Klavier gespielt: die Note steht gross im
+// System, das Mikrofon hoert zu und erkennt, ob richtig gespielt wurde.
+async function runSession(mode) {
   ensureAudio();
   const app = root();
   app.innerHTML = "";
@@ -171,13 +165,18 @@ async function runSession(mode, opts = {}) {
     mode,
   });
 
-  const view = el("div", "view");
-  if (opts.mic) view.classList.add("mic-mode");
+  const view = el("div", "view session-live");
+
+  let unsub = () => {};
+  const stop = () => {
+    unsub();
+    stopMic();
+  };
 
   const top = el("div", "session-top");
   const close = el("button", "iconbtn", "✕");
   close.addEventListener("click", () => {
-    if (opts.mic) stopMic(); // Mikrofon nicht im Hintergrund weiterlaufen lassen
+    stop();
     showModes();
   });
   const bar = el("div", "progress");
@@ -198,63 +197,46 @@ async function runSession(mode, opts = {}) {
   const feedback = el("div", "feedback", "");
   view.appendChild(feedback);
 
-  // Mikrofon-Panel: Status, Live-Anzeige des Gehoerten und ein Pegelbalken.
-  let micHeard = null;
-  let meterFill = null;
-  let micPanel = null;
-  if (opts.mic) {
-    micPanel = el("div", "mic-panel");
-    micPanel.appendChild(el("div", "mic-dot"));
-    const micInfo = el("div", "mic-info");
-    const micTitle = el("div", "mic-title", "Mikrofon startet ...");
-    micHeard = el("div", "mic-heard", "");
-    micInfo.appendChild(micTitle);
-    micInfo.appendChild(micHeard);
-    micPanel.appendChild(micInfo);
-    const meter = el("div", "mic-meter");
-    meterFill = el("div", "mic-meter-fill");
-    meter.appendChild(meterFill);
-    micPanel.appendChild(meter);
-    micPanel._title = micTitle;
-    view.appendChild(micPanel);
-  }
+  // Mikrofon-Leiste: Status-Punkt, Live-Anzeige des Gehoerten, Pegelbalken.
+  const micPanel = el("div", "mic-panel");
+  micPanel.appendChild(el("div", "mic-dot"));
+  const micInfo = el("div", "mic-info");
+  const micTitle = el("div", "mic-title", "Mikrofon startet ...");
+  const micHeard = el("div", "mic-heard", "");
+  micInfo.appendChild(micTitle);
+  micInfo.appendChild(micHeard);
+  micPanel.appendChild(micInfo);
+  const meter = el("div", "mic-meter");
+  const meterFill = el("div", "mic-meter-fill");
+  meter.appendChild(meterFill);
+  micPanel.appendChild(meter);
+  view.appendChild(micPanel);
 
-  const kbWrap = el("div", "");
-  view.appendChild(kbWrap);
   app.appendChild(view);
 
+  // Eingabe (Mikrofon jetzt, spaeter auch MIDI) laeuft ueber onNote in die Antwort.
   let answer = null;
-  const kb = buildKeyboard(kbWrap, {
-    low: current.config.lowestMidi,
-    high: current.config.highestMidi,
-    center: current.config.centerMidi,
-    onPress: (midi) => {
-      if (answer) answer(midi);
+  unsub = onNote(({ midi }) => {
+    if (answer) answer(midi);
+  });
+
+  const ok = await startMic((midi) => feedNote(midi, 0.9, "mic"), {
+    minMidi: current.config.lowestMidi - 12,
+    maxMidi: current.config.highestMidi + 12,
+    onLevel: (l) => {
+      meterFill.style.width = Math.round(l * 100) + "%";
+    },
+    onRaw: (midi) => {
+      micHeard.textContent = "gehoert: " + chromaticLabel(midi, settings.naming);
     },
   });
-  if (settings.showKeyLabels) kb.labelWhites(settings.naming);
-
-  // Mikrofon starten: erkannte Note als "mic"-Eingabe einspeisen. Sie laeuft
-  // dann durch dieselbe Kette wie Touch/MIDI (Taste leuchtet, Antwort zaehlt).
-  if (opts.mic) {
-    const ok = await startMic((midi) => feedNote(midi, 0.9, "mic"), {
-      minMidi: current.config.lowestMidi - 12,
-      maxMidi: current.config.highestMidi + 12,
-      onLevel: (l) => {
-        if (meterFill) meterFill.style.width = Math.round(l * 100) + "%";
-      },
-      onRaw: (midi) => {
-        if (micHeard) micHeard.textContent = "gehoert: " + chromaticLabel(midi, settings.naming);
-      },
-    });
-    if (ok) {
-      micPanel.classList.add("live");
-      micPanel._title.textContent = "Hoere zu, spiel die angezeigte Note";
-    } else {
-      micPanel.classList.add("err");
-      micPanel._title.textContent = "Kein Mikrofon-Zugriff";
-      micHeard.textContent = "Erlaube das Mikrofon oder nutze die Tasten unten.";
-    }
+  if (ok) {
+    micPanel.classList.add("live");
+    micTitle.textContent = "Spiel die Note am Klavier";
+  } else {
+    micPanel.classList.add("err");
+    micTitle.textContent = "Kein Mikrofon-Zugriff";
+    micHeard.textContent = "Bitte in den Browser-Einstellungen das Mikrofon erlauben.";
   }
 
   const tick = setInterval(() => {
@@ -267,10 +249,10 @@ async function runSession(mode, opts = {}) {
     while (!engine.done) {
       const task = await engine.nextTask();
       if (!task) break;
-      prompt.textContent = task.kind === "ear" ? "Gehoer" : "Noten lesen";
+      prompt.textContent = task.kind === "ear" ? "Hoere und spiele" : "Lies und spiele";
       prompt.appendChild(el("div", "prompt-sub", task.prompt));
       task.render(stimCard);
-      kb.scrollToMidi(task.targetMidi);
+      stimCard.className = "staff-card";
       feedback.textContent = "";
       feedback.className = "feedback";
 
@@ -283,12 +265,11 @@ async function runSession(mode, opts = {}) {
 
       const correct = task.check(pressed);
       if (correct) {
-        kb.markCorrect(task.targetMidi);
+        stimCard.classList.add("good");
         feedback.textContent = task.label ? `Richtig · ${task.label}` : "Richtig";
         feedback.className = "feedback good";
       } else {
-        kb.markWrong(pressed);
-        kb.markCorrect(task.targetMidi);
+        stimCard.classList.add("bad");
         task.reveal();
         feedback.textContent = task.label ? `Das war ${task.label}` : "Nicht ganz";
         feedback.className = "feedback bad";
@@ -296,7 +277,7 @@ async function runSession(mode, opts = {}) {
       await engine.record(task, correct);
       barFill.style.width = engine.progress * 100 + "%";
 
-      await delay(correct ? 700 : 1500);
+      await delay(correct ? 900 : 1700);
       sincePause++;
       if (sincePause >= 6 && !engine.done) {
         await microPause(view);
@@ -305,8 +286,7 @@ async function runSession(mode, opts = {}) {
     }
   } finally {
     clearInterval(tick);
-    kb.destroy();
-    if (opts.mic) stopMic();
+    stop();
   }
   await finishSession(engine);
 }
@@ -375,33 +355,6 @@ async function finishSession(engine) {
   app.appendChild(view);
 }
 
-// ---------- Freies Spiel ----------
-function showFreePlay() {
-  ensureAudio();
-  const app = root();
-  app.innerHTML = "";
-  const view = el("div", "view");
-  const bar = el("div", "topbar");
-  const back = el("button", "iconbtn", "‹");
-  back.addEventListener("click", showModes);
-  bar.appendChild(back);
-  bar.appendChild(el("div", "title", "Freies Spiel"));
-  view.appendChild(bar);
-
-  view.appendChild(el("p", "method-hint", "Einfach ausprobieren. Die Notennamen stehen auf den weissen Tasten."));
-
-  const kbWrap = el("div", "");
-  view.appendChild(kbWrap);
-  app.appendChild(view);
-  const kb = buildKeyboard(kbWrap, {
-    low: current.config.lowestMidi,
-    high: current.config.highestMidi,
-    center: current.config.centerMidi,
-  });
-  kbWrap.classList.add("tall");
-  kb.labelWhites(settings.naming);
-}
-
 // ---------- Einstellungen ----------
 async function showSettings() {
   const app = root();
@@ -426,17 +379,10 @@ async function showSettings() {
       saveSettings();
     }, (v) => (v === "de" ? "Deutsch (H)" : "International (B)"))
   );
-  view.appendChild(
-    choiceRow("Notennamen auf Tasten", [false, true], settings.showKeyLabels, (v) => {
-      settings.showKeyLabels = v;
-      saveSettings();
-    }, (v) => (v ? "an" : "aus"))
-  );
-
   const midiRow = el("div", "setting-row");
   midiRow.appendChild(el("div", "setting-label", "Echtes Keyboard (MIDI)"));
   const midiBtn = el("button", "btn ghost small", isMidiEnabled() ? "verbunden" : "verbinden");
-  const midiStatus = el("div", "setting-note", "Auf dem iPhone nicht verfuegbar, dort Touch nutzen.");
+  const midiStatus = el("div", "setting-note", "Optional fuers E-Piano. Sonst hoert das Mikrofon zu.");
   midiBtn.addEventListener("click", async () => {
     await initMidi((s) => (midiStatus.textContent = s));
   });
@@ -472,7 +418,7 @@ async function showSettings() {
   });
   view.appendChild(reset);
 
-  view.appendChild(el("p", "version-note", "Version 0.3 · privat"));
+  view.appendChild(el("p", "version-note", "Version 0.4 · privat"));
   app.appendChild(view);
 }
 
