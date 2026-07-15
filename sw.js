@@ -1,7 +1,7 @@
 // Service Worker: macht die App offline nutzbar und aktualisiert sich automatisch.
 // Bei jeder neuen Version die CACHE-Nummer erhoehen (passiert beim Deploy von Hand
 // oder spaeter automatisch). Alte Caches werden dann entfernt.
-const CACHE = "instrumente-lernen-v2";
+const CACHE = "instrumente-lernen-v3";
 
 const ASSETS = [
   "./",
@@ -14,6 +14,7 @@ const ASSETS = [
   "./src/core/theory.js",
   "./src/core/audio.js",
   "./src/core/input.js",
+  "./src/core/pitch.js",
   "./src/core/srs.js",
   "./src/core/scheduler.js",
   "./src/core/store.js",

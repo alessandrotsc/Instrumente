@@ -42,3 +42,12 @@ export function diatonicNumber(midi) {
 export function midiFreq(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
 }
+
+// Vollstaendiger Name inkl. schwarzer Tasten, nur fuer Anzeige (z. B. was das
+// Mikrofon gerade hoert). Die Lernlogik nutzt weiter noteName/noteLabel.
+const CHROMA_DE = ["C", "Cis", "D", "Dis", "E", "F", "Fis", "G", "Gis", "A", "Ais", "H"];
+const CHROMA_INT = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+export function chromaticLabel(midi, naming = "de") {
+  const arr = naming === "de" ? CHROMA_DE : CHROMA_INT;
+  return arr[midi % 12] + midiToOctave(midi);
+}

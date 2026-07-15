@@ -5,7 +5,9 @@ import { SessionEngine } from "../core/session.js";
 import { buildKeyboard } from "./keyboard.js";
 import { INSTRUMENTS, getInstrument } from "../instruments/registry.js";
 import { ensureAudio } from "../core/audio.js";
-import { initMidi, isMidiEnabled } from "../core/input.js";
+import { initMidi, isMidiEnabled, feedNote } from "../core/input.js";
+import { startMic, stopMic } from "../core/pitch.js";
+import { chromaticLabel } from "../core/theory.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SETTINGS = { length: 15, naming: "de", showKeyLabels: false };
@@ -121,6 +123,11 @@ function showModes() {
   );
   list.appendChild(modeCard("🎼", "Noten lesen", "Note sehen, richtige Taste druecken", "", () => runSession("read")));
   list.appendChild(modeCard("👂", "Gehoer", "Ton hoeren, Taste finden", "", () => runSession("ear")));
+  list.appendChild(
+    modeCard("🎤", "Am echten Klavier", "Note lesen und am echten Klavier spielen, das Mikrofon hoert zu", "", () =>
+      runSession("read", { mic: true })
+    )
+  );
   list.appendChild(modeCard("🎹", "Freies Spiel", "Einfach ausprobieren mit Notennamen", "", showFreePlay));
   list.appendChild(soonCard("✋", "Fingersatz", "Tonleitern und Daumenuntersatz"));
   list.appendChild(soonCard("🥁", "Rhythmus", "Timing und Metronom"));
@@ -153,7 +160,8 @@ function soonCard(icon, title, sub) {
 }
 
 // ---------- Lern-Sitzung ----------
-async function runSession(mode) {
+// opts.mic = true: Antwort kommt vom echten Klavier ueber das Mikrofon.
+async function runSession(mode, opts = {}) {
   ensureAudio();
   const app = root();
   app.innerHTML = "";
@@ -164,10 +172,14 @@ async function runSession(mode) {
   });
 
   const view = el("div", "view");
+  if (opts.mic) view.classList.add("mic-mode");
 
   const top = el("div", "session-top");
   const close = el("button", "iconbtn", "✕");
-  close.addEventListener("click", showModes);
+  close.addEventListener("click", () => {
+    if (opts.mic) stopMic(); // Mikrofon nicht im Hintergrund weiterlaufen lassen
+    showModes();
+  });
   const bar = el("div", "progress");
   const barFill = el("div", "progress-fill");
   bar.appendChild(barFill);
@@ -186,6 +198,27 @@ async function runSession(mode) {
   const feedback = el("div", "feedback", "");
   view.appendChild(feedback);
 
+  // Mikrofon-Panel: Status, Live-Anzeige des Gehoerten und ein Pegelbalken.
+  let micHeard = null;
+  let meterFill = null;
+  let micPanel = null;
+  if (opts.mic) {
+    micPanel = el("div", "mic-panel");
+    micPanel.appendChild(el("div", "mic-dot"));
+    const micInfo = el("div", "mic-info");
+    const micTitle = el("div", "mic-title", "Mikrofon startet ...");
+    micHeard = el("div", "mic-heard", "");
+    micInfo.appendChild(micTitle);
+    micInfo.appendChild(micHeard);
+    micPanel.appendChild(micInfo);
+    const meter = el("div", "mic-meter");
+    meterFill = el("div", "mic-meter-fill");
+    meter.appendChild(meterFill);
+    micPanel.appendChild(meter);
+    micPanel._title = micTitle;
+    view.appendChild(micPanel);
+  }
+
   const kbWrap = el("div", "");
   view.appendChild(kbWrap);
   app.appendChild(view);
@@ -200,6 +233,29 @@ async function runSession(mode) {
     },
   });
   if (settings.showKeyLabels) kb.labelWhites(settings.naming);
+
+  // Mikrofon starten: erkannte Note als "mic"-Eingabe einspeisen. Sie laeuft
+  // dann durch dieselbe Kette wie Touch/MIDI (Taste leuchtet, Antwort zaehlt).
+  if (opts.mic) {
+    const ok = await startMic((midi) => feedNote(midi, 0.9, "mic"), {
+      minMidi: current.config.lowestMidi - 12,
+      maxMidi: current.config.highestMidi + 12,
+      onLevel: (l) => {
+        if (meterFill) meterFill.style.width = Math.round(l * 100) + "%";
+      },
+      onRaw: (midi) => {
+        if (micHeard) micHeard.textContent = "gehoert: " + chromaticLabel(midi, settings.naming);
+      },
+    });
+    if (ok) {
+      micPanel.classList.add("live");
+      micPanel._title.textContent = "Hoere zu, spiel die angezeigte Note";
+    } else {
+      micPanel.classList.add("err");
+      micPanel._title.textContent = "Kein Mikrofon-Zugriff";
+      micHeard.textContent = "Erlaube das Mikrofon oder nutze die Tasten unten.";
+    }
+  }
 
   const tick = setInterval(() => {
     barFill.style.width = engine.progress * 100 + "%";
@@ -250,6 +306,7 @@ async function runSession(mode) {
   } finally {
     clearInterval(tick);
     kb.destroy();
+    if (opts.mic) stopMic();
   }
   await finishSession(engine);
 }
@@ -415,7 +472,7 @@ async function showSettings() {
   });
   view.appendChild(reset);
 
-  view.appendChild(el("p", "version-note", "Version 0.2 · privat"));
+  view.appendChild(el("p", "version-note", "Version 0.3 · privat"));
   app.appendChild(view);
 }
 

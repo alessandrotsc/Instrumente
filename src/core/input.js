@@ -11,8 +11,9 @@ export function onNote(cb) {
 }
 
 // Zentrale Stelle: spielt den Klang und meldet die Note an alle Zuhoerer.
+// Bei "mic" spielt das echte Klavier den Ton bereits selbst, dann kein Synth.
 export function feedNote(midi, velocity = 0.8, source = "touch") {
-  playNote(midi, { velocity });
+  if (source !== "mic") playNote(midi, { velocity });
   for (const cb of listeners) cb({ midi, velocity, source });
 }
 
